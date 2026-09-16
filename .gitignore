@@ -51,3 +51,9 @@ yarn-error.log*
 .DS_Store
 *.pem
 Thumbs.db
+
+# Backup and export archives
+*.tar.gz
+*.tar
+*.zip
+data_backup_*/

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Z2G (Zoho to Google Workspace Migration Platform) - Mac Quick Launch Script
+# ==============================================================================
+
+# Ensure script runs from project root directory
+cd "$(dirname "$0")" || exit 1
+
+# Formatting
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo ""
+echo -e "${BLUE}${BOLD}==================================================================${NC}"
+echo -e "${CYAN}${BOLD}       🚀 Z2G Mailbox Migration Platform - Mac Launcher${NC}"
+echo -e "${BLUE}${BOLD}==================================================================${NC}"
+echo ""
+
+# 1. Check Node.js
+if ! command -v node >/dev/null 2>&1; then
+  echo -e "${RED}[ERROR] Node.js is not installed!${NC}"
+  echo ""
+  echo -e "Please install Node.js (version 18 or higher):"
+  if command -v brew >/dev/null 2>&1; then
+    echo -e "  Run: ${YELLOW}brew install node${NC}"
+  else
+    echo -e "  Download from: ${CYAN}https://nodejs.org${NC}"
+  fi
+  echo ""
+  read -p "Press [Enter] to exit..."
+  exit 1
+fi
+
+NODE_VER=$(node -v | sed 's/v//' | cut -d'.' -f1)
+if [ "$NODE_VER" -lt 18 ]; then
+  echo -e "${RED}[ERROR] Node.js version $NODE_VER detected. Version 18+ is required.${NC}"
+  echo -e "Please update Node.js at ${CYAN}https://nodejs.org${NC}"
+  read -p "Press [Enter] to exit..."
+  exit 1
+fi
+echo -e "${GREEN}✓ Node.js $(node -v) detected${NC}"
+
+# 2. Check and prepare data folder
+mkdir -p data
+
+# 3. Check environment file
+if [ ! -f .env.local ]; then
+  if [ -f .env.example ]; then
+    echo -e "${YELLOW}! .env.local not found. Initializing from .env.example...${NC}"
+    cp .env.example .env.local
+    echo -e "${GREEN}✓ Created .env.local${NC}"
+  fi
+fi
+
+# 4. Check dependencies (node_modules)
+if [ ! -d node_modules ] || [ ! -f node_modules/.package-lock.json ]; then
+  echo -e "${YELLOW}⚙ Installing project dependencies (npm install)...${NC}"
+  npm install
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}[ERROR] npm install failed.${NC}"
+    read -p "Press [Enter] to exit..."
+    exit 1
+  fi
+  echo -e "${GREEN}✓ Dependencies installed${NC}"
+fi
+
+# 5. Verify native SQLite module
+node -e "require('better-sqlite3')" >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo -e "${YELLOW}⚙ Rebuilding SQLite native module for this Mac architecture ($(uname -m))...${NC}"
+  npm rebuild better-sqlite3
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}[WARNING] Native rebuild had issues, attempting npm install --build-from-source...${NC}"
+    npm install better-sqlite3 --build-from-source
+  fi
+fi
+echo -e "${GREEN}✓ SQLite database engine ready${NC}"
+
+# 6. Check if port 3000 is occupied
+PORT_OCCUPIED=$(lsof -i:3000 -t | head -n1)
+if [ -n "$PORT_OCCUPIED" ]; then
+  echo -e "${YELLOW}! Port 3000 is already in use (PID: $PORT_OCCUPIED).${NC}"
+  echo -e "  Reusing the existing server running on http://localhost:3000"
+  echo ""
+  open http://localhost:3000
+  echo -e "${GREEN}✓ Opened http://localhost:3000 in your browser.${NC}"
+  exit 0
+fi
+
+# 7. Start server and open browser
+echo ""
+echo -e "${CYAN}Starting Next.js development server...${NC}"
+echo -e "${GREEN}${BOLD}Dashboard URL: ${CYAN}http://localhost:3000${NC}"
+echo -e "${YELLOW}Press Ctrl+C to stop the server anytime.${NC}"
+echo ""
+
+# Launch browser in background after 3 seconds
+(sleep 3 && open http://localhost:3000) &
+
+# Run server
+npm run dev

@@ -19,7 +19,28 @@ A high-performance, enterprise-grade mailbox migration platform designed to tran
 - **Protocols**: IMAP (`imapflow`) & Google Workspace API (`google-auth-library` with domain-wide delegation)
 - **Testing**: Vitest with unit and acceptance test suites
 
-## Getting Started
+## 🍏 macOS Quickstart (1-Click Run)
+
+For detailed macOS instructions on setting up or transferring an active migration to another Mac, see **[MAC_SETUP.md](MAC_SETUP.md)**.
+
+### Option 1: Double-Click Finder Launcher
+1. Open the repository folder in Finder.
+2. Double-click **`start.command`**.
+3. Terminal opens, checks dependencies, builds SQLite native binaries, boots the app, and opens `http://localhost:3000` in your browser!
+
+### Option 2: Command-Line Launcher
+```bash
+./run.sh
+```
+
+### Option 3: Automated Setup & Verification
+```bash
+./setup.sh
+```
+
+---
+
+## Manual Getting Started
 
 ### 1. Install Dependencies
 ```bash
@@ -42,6 +63,13 @@ Open [http://localhost:3000](http://localhost:3000) to view the migration dashbo
 ```bash
 npm test
 ```
+
+## Transferring Migrations Between Macs
+To move an in-progress migration with all data and credentials to another Mac:
+1. On current Mac: `./scripts/export-data.sh` (produces `z2g-migration-data.tar.gz`)
+2. Send via AirDrop or USB to target Mac.
+3. On target Mac: `./scripts/import-data.sh`
+4. Run `./run.sh` (or double-click `start.command`).
 
 ## Security & Compliance
 - Source passwords and credentials are cryptographically protected in SQLite and never logged in plain text.
