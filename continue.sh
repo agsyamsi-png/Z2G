@@ -57,9 +57,12 @@ fi
 node -e "require('better-sqlite3')" >/dev/null 2>&1
 if [ $? -ne 0 ]; then
   echo -e "${YELLOW}⚙ Compiling SQLite native module for this Mac ($(node -v))...${NC}"
-  npm rebuild better-sqlite3
-  if [ $? -ne 0 ]; then
-    npm install better-sqlite3 --build-from-source
+  (cd node_modules/better-sqlite3 && npm run install) 2>/dev/null
+  if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    npm rebuild better-sqlite3 --ignore-scripts=false
+  fi
+  if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    npm install better-sqlite3 --build-from-source --ignore-scripts=false
   fi
 fi
 

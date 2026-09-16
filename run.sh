@@ -79,11 +79,13 @@ fi
 # 5. Verify native SQLite module
 node -e "require('better-sqlite3')" >/dev/null 2>&1
 if [ $? -ne 0 ]; then
-  echo -e "${YELLOW}⚙ Rebuilding SQLite native module for this Mac architecture ($(uname -m))...${NC}"
-  npm rebuild better-sqlite3
-  if [ $? -ne 0 ]; then
-    echo -e "${RED}[WARNING] Native rebuild had issues, attempting npm install --build-from-source...${NC}"
-    npm install better-sqlite3 --build-from-source
+  echo -e "${YELLOW}⚙ Compiling SQLite native module for this Mac ($(node -v))...${NC}"
+  (cd node_modules/better-sqlite3 && npm run install) 2>/dev/null
+  if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    npm rebuild better-sqlite3 --ignore-scripts=false
+  fi
+  if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    npm install better-sqlite3 --build-from-source --ignore-scripts=false
   fi
 fi
 echo -e "${GREEN}✓ SQLite database engine ready${NC}"
