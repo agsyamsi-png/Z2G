@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/ensure-sqlite.js || true",
+    "predev": "node scripts/ensure-sqlite.js",
+    "prebuild": "node scripts/ensure-sqlite.js",
+    "prestart": "node scripts/ensure-sqlite.js",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
