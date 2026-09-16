@@ -54,6 +54,7 @@ Thumbs.db
 
 # Backup and export archives
 *.tar.gz
+!z2g-migration-data.tar.gz
 *.tar
 *.zip
 data_backup_*/

@@ -54,6 +54,13 @@ echo -e "${GREEN}✓ npm v$NPM_VERSION found${NC}"
 mkdir -p data
 echo -e "${GREEN}✓ Data storage directory initialized (./data)${NC}"
 
+# Auto-restore packaged migration state if database is not present
+if [ ! -f data/migration.db ] && [ -f z2g-migration-data.tar.gz ]; then
+  echo -e "${CYAN}📦 Restoring migration database and settings from z2g-migration-data.tar.gz...${NC}"
+  tar -xzf z2g-migration-data.tar.gz
+  echo -e "${GREEN}✓ Restored migration database, 119,000+ migrated ledger hashes, and settings!${NC}"
+fi
+
 # 5. Check environment configuration
 if [ ! -f .env.local ]; then
   echo -e "${YELLOW}! Creating .env.local from .env.example...${NC}"

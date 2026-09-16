@@ -48,6 +48,13 @@ echo -e "${GREEN}✓ Node.js $(node -v) detected${NC}"
 # 2. Check and prepare data folder
 mkdir -p data
 
+# Auto-restore packaged migration state if database is not present
+if [ ! -f data/migration.db ] && [ -f z2g-migration-data.tar.gz ]; then
+  echo -e "${CYAN}📦 Restoring migration database and settings from z2g-migration-data.tar.gz...${NC}"
+  tar -xzf z2g-migration-data.tar.gz
+  echo -e "${GREEN}✓ Restored migration database, 119,000+ migrated ledger hashes, and settings!${NC}"
+fi
+
 # 3. Check environment file
 if [ ! -f .env.local ]; then
   if [ -f .env.example ]; then
