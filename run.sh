@@ -21,13 +21,24 @@ echo -e "${CYAN}${BOLD}       🚀 Z2G Mailbox Migration Platform - Mac Launcher
 echo -e "${BLUE}${BOLD}==================================================================${NC}"
 echo ""
 
+# Prefer Node 22 or Node 20 LTS if available via Homebrew
+if [ -d "/opt/homebrew/opt/node@22/bin" ]; then
+  export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+elif [ -d "/opt/homebrew/opt/node@20/bin" ]; then
+  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+elif [ -d "/usr/local/opt/node@22/bin" ]; then
+  export PATH="/usr/local/opt/node@22/bin:$PATH"
+elif [ -d "/usr/local/opt/node@20/bin" ]; then
+  export PATH="/usr/local/opt/node@20/bin:$PATH"
+fi
+
 # 1. Check Node.js
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${RED}[ERROR] Node.js is not installed!${NC}"
   echo ""
-  echo -e "Please install Node.js (version 18 or higher):"
+  echo -e "Please install Node.js (version 20 or 22 LTS):"
   if command -v brew >/dev/null 2>&1; then
-    echo -e "  Run: ${YELLOW}brew install node${NC}"
+    echo -e "  Run: ${YELLOW}brew install node@22${NC}"
   else
     echo -e "  Download from: ${CYAN}https://nodejs.org${NC}"
   fi
@@ -37,13 +48,25 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 NODE_VER=$(node -v | sed 's/v//' | cut -d'.' -f1)
+if [ "$NODE_VER" -ge 24 ] && command -v brew >/dev/null 2>&1; then
+  echo -e "${YELLOW}! Detected experimental Node.js v$NODE_VER.${NC}"
+  echo -e "${CYAN}Switching to Node 22 LTS for precompiled database binaries...${NC}"
+  brew install node@22 >/dev/null 2>&1
+  if [ -d "/opt/homebrew/opt/node@22/bin" ]; then
+    export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+  elif [ -d "/usr/local/opt/node@22/bin" ]; then
+    export PATH="/usr/local/opt/node@22/bin:$PATH"
+  fi
+  NODE_VER=$(node -v | sed 's/v//' | cut -d'.' -f1)
+fi
+
 if [ "$NODE_VER" -lt 18 ]; then
-  echo -e "${RED}[ERROR] Node.js version $NODE_VER detected. Version 18+ is required.${NC}"
-  echo -e "Please update Node.js at ${CYAN}https://nodejs.org${NC}"
+  echo -e "${RED}[ERROR] Node.js version $NODE_VER detected. Version 20 or 22 LTS is required.${NC}"
+  echo -e "Please install Node 22 via: ${CYAN}brew install node@22${NC}"
   read -p "Press [Enter] to exit..."
   exit 1
 fi
-echo -e "${GREEN}✓ Node.js $(node -v) detected${NC}"
+echo -e "${GREEN}✓ Node.js $(node -v) ready (${CYAN}$(which node)${NC})"
 
 # 2. Check and prepare data folder
 mkdir -p data

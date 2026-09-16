@@ -29,12 +29,35 @@ echo -e "${GREEN}${BOLD}       🔥 Z2G AUTO-RESUME — 1-CLICK MIGRATION ENGINE
 echo -e "${CYAN}${BOLD}====================================================================${NC}"
 echo ""
 
+# Prefer Node 22 or Node 20 LTS if available via Homebrew
+if [ -d "/opt/homebrew/opt/node@22/bin" ]; then
+  export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+elif [ -d "/opt/homebrew/opt/node@20/bin" ]; then
+  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+elif [ -d "/usr/local/opt/node@22/bin" ]; then
+  export PATH="/usr/local/opt/node@22/bin:$PATH"
+elif [ -d "/usr/local/opt/node@20/bin" ]; then
+  export PATH="/usr/local/opt/node@20/bin:$PATH"
+fi
+
 # 1. Check Node.js
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${RED}[ERROR] Node.js is not installed.${NC}"
-  echo -e "Please install Node.js from https://nodejs.org or run 'brew install node'"
+  echo -e "Please install Node.js from https://nodejs.org or run 'brew install node@22'"
   read -p "Press [Enter] to exit..."
   exit 1
+fi
+
+NODE_VER=$(node -v | sed 's/v//' | cut -d'.' -f1)
+if [ "$NODE_VER" -ge 24 ] && command -v brew >/dev/null 2>&1; then
+  echo -e "${YELLOW}! Detected experimental Node.js v$NODE_VER.${NC}"
+  echo -e "${CYAN}Switching to Node 22 LTS for precompiled database binaries...${NC}"
+  brew install node@22 >/dev/null 2>&1
+  if [ -d "/opt/homebrew/opt/node@22/bin" ]; then
+    export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+  elif [ -d "/usr/local/opt/node@22/bin" ]; then
+    export PATH="/usr/local/opt/node@22/bin:$PATH"
+  fi
 fi
 
 # 2. Unpack migration database if needed
