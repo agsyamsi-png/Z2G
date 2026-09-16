@@ -59,7 +59,7 @@ export default function BulkMigrationModal({
     }
   };
 
-  const executeAction = async (action: "start" | "pause" | "resume" | "stop") => {
+  const executeAction = async (action: "start" | "pause" | "resume" | "stop" | "yolo") => {
     setLoadingAction(action);
     setError(null);
     try {
@@ -68,7 +68,7 @@ export default function BulkMigrationModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action,
-          concurrency,
+          concurrency: action === "yolo" ? 6 : concurrency,
           mappingIds: targetMappingIds,
         }),
       });
@@ -79,6 +79,7 @@ export default function BulkMigrationModal({
       }
 
       setStatus(data);
+      if (action === "yolo") setConcurrency(6);
       if (onDataRefresh) onDataRefresh();
     } catch (err: unknown) {
       setError((err as Error).message);
@@ -139,6 +140,11 @@ export default function BulkMigrationModal({
                 <h3 className="text-base font-bold text-white">
                   Domain Bulk Migration Command Center
                 </h3>
+                {status?.yoloMode && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black tracking-wide bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600 text-white shadow-md shadow-orange-500/20 animate-pulse">
+                    🔥 YOLO MODE (MAX SPEED)
+                  </span>
+                )}
                 {isQueueRunning ? (
                   <span className="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-700/60 animate-pulse">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
@@ -356,13 +362,15 @@ export default function BulkMigrationModal({
               </div>
 
               <div className="flex items-center space-x-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
-                {[1, 2, 3, 4].map((n) => (
+                {[1, 2, 4, 6, 8].map((n) => (
                   <button
                     key={n}
                     onClick={() => handleConcurrencyChange(n)}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
                       concurrency === n
-                        ? "bg-emerald-600 text-white font-bold shadow-md shadow-emerald-600/30"
+                        ? n >= 6
+                          ? "bg-gradient-to-r from-amber-500 to-rose-600 text-white font-extrabold shadow-md shadow-orange-500/30"
+                          : "bg-emerald-600 text-white font-bold shadow-md shadow-emerald-600/30"
                         : "text-slate-400 hover:text-white"
                     }`}
                   >
@@ -394,6 +402,18 @@ export default function BulkMigrationModal({
               </div>
             ) : isQueueRunning ? (
               <>
+                {!status?.yoloMode && (
+                  <button
+                    onClick={() => executeAction("yolo")}
+                    disabled={loadingAction === "yolo"}
+                    className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white rounded-xl text-xs font-black transition cursor-pointer flex items-center space-x-1.5 shadow-md shadow-orange-500/20"
+                    title="Switch running queue to YOLO Mode with 6 concurrent workers and auto-recovery"
+                  >
+                    <span>🔥</span>
+                    <span>{loadingAction === "yolo" ? "Boosting..." : "Switch to YOLO (6x)"}</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => executeAction("pause")}
                   disabled={loadingAction === "pause"}
@@ -446,18 +466,30 @@ export default function BulkMigrationModal({
                 <span>All Eligible Mailboxes Migrated</span>
               </div>
             ) : (
-              <button
-                onClick={() => executeAction("start")}
-                disabled={loadingAction === "start" || (status?.pendingCount === 0 && !hasActiveWorkers)}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-emerald-600/25"
-              >
-                <Play className="w-4 h-4 fill-current" />
-                <span>
-                  {loadingAction === "start"
-                    ? "Starting Bulk Migration..."
-                    : `⚡ Start Bulk Migration (${targetMappingIds?.length ? targetMappingIds.length : (status?.pendingCount || totalEligible)} Accounts)`}
-                </span>
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => executeAction("yolo")}
+                  disabled={loadingAction === "yolo"}
+                  className="px-5 py-2.5 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white rounded-xl text-xs font-black transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-orange-600/30"
+                  title="Run maximum speed unattended migration with 6 workers and auto-recovery"
+                >
+                  <span>🔥</span>
+                  <span>{loadingAction === "yolo" ? "Launching YOLO Mode..." : "Run in YOLO Mode (6x)"}</span>
+                </button>
+
+                <button
+                  onClick={() => executeAction("start")}
+                  disabled={loadingAction === "start"}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-emerald-600/25"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>
+                    {loadingAction === "start"
+                      ? "Starting..."
+                      : `Start Normal (${targetMappingIds?.length ? targetMappingIds.length : (status?.pendingCount || totalEligible)})`}
+                  </span>
+                </button>
+              </div>
             )}
 
             <button

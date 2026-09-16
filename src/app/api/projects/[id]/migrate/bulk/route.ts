@@ -37,8 +37,19 @@ export async function POST(
 
     let result;
     switch (action) {
+      case "yolo":
+        result = await startBulkMigration(projectId, {
+          concurrency: Number(concurrency) || 6,
+          mappingIds,
+          yolo: true,
+        });
+        break;
       case "start":
-        result = await startBulkMigration(projectId, { concurrency, mappingIds });
+        result = await startBulkMigration(projectId, {
+          concurrency: Number(concurrency) || (body.yolo ? 6 : 2),
+          mappingIds,
+          yolo: Boolean(body.yolo),
+        });
         break;
       case "pause":
         result = pauseBulkMigration(projectId);
