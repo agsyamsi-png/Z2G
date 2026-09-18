@@ -19,6 +19,15 @@ A high-performance, enterprise-grade mailbox migration platform designed to tran
 - **Protocols**: IMAP (`imapflow`) & Google Workspace API (`google-auth-library` with domain-wide delegation)
 - **Testing**: Vitest with unit and acceptance test suites
 
+## ☁️ Google Cloud Compute Engine Deployment (24/7 Cloud Execution)
+
+To run the migration continuously in the cloud without keeping a local laptop awake:
+- **[GCE Deployment Guide (GCE_DEPLOYMENT.md)](GCE_DEPLOYMENT.md)**
+- **1-Command Cloud Shell Launch**:
+  ```bash
+  git clone https://github.com/agsyamsi-png/Z2G.git && cd Z2G && ./deploy/gce/deploy-vm.sh
+  ```
+
 ## 🍏 macOS Quickstart (1-Click Run)
 
 For detailed macOS instructions on setting up or transferring an active migration to another Mac, see **[MAC_SETUP.md](MAC_SETUP.md)**.
