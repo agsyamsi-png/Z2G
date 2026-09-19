@@ -41,6 +41,20 @@ export const messageLedger = {
   },
 
   /**
+   * Fast retrieval of all verified UIDs for a specific folder.
+   * Enables delta UID pre-filtering so existing emails are skipped without downloading raw bodies.
+   */
+  getVerifiedUids(mappingId: string, sourceFolder: string): Set<number> {
+    const db = getDatabase();
+    const rows = db
+      .prepare(
+        "SELECT source_uid FROM message_ledger WHERE mapping_id = ? AND source_folder = ? AND transfer_status = 'VERIFIED'"
+      )
+      .all(mappingId, sourceFolder) as Array<{ source_uid: number }>;
+    return new Set(rows.map((r) => r.source_uid));
+  },
+
+  /**
    * Looks up an entry by RFC822 hash and mapping to avoid duplicate writes.
    */
   findByHash(mappingId: string, rfc822Hash: string): MessageLedgerRow | undefined {

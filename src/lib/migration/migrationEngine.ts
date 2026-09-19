@@ -5,6 +5,7 @@ import { decryptCredential } from "../security/crypto";
 import { messageLedger } from "./ledger";
 import { secureLogger } from "../security/logger";
 import { importMessageToGoogle } from "../providers/google";
+import { normalizeRfc822Headers } from "./normalizer";
 
 export interface MigrationProgressUpdate {
   jobId: string;
@@ -276,164 +277,198 @@ export async function executeMigrationJob(
             else if (lowerName.includes("spam") || lowerName.includes("junk")) gwsLabel = "SPAM";
             else if (mb.path.toUpperCase() !== "INBOX") gwsLabel = mb.name;
 
-            for await (const msg of imapClient.fetch("1:*", {
-              source: true,
-              envelope: true,
-              uid: true,
-              internalDate: true,
-            })) {
-              const currentJobControl = activeMigrationJobs.get(jobId);
-              if (currentJobControl?.cancelRequested) break;
+            // Pillar 5: Dual-Layer Idempotent Checkpoint System & Delta UID Pre-Filtering
+            const verifiedUids = messageLedger.getVerifiedUids(mappingId, mb.path);
 
-              const uid = msg.uid;
-              const sourceMessageId =
-                msg.envelope?.messageId ||
-                `<${uid}-${mb.path.replace(/[^a-zA-Z0-9]/g, "_")}-${preflight.mapping.source_email}>`;
-              const subject = msg.envelope?.subject || "No Subject";
-              const sender =
-                msg.envelope?.from?.[0]?.address ||
-                msg.envelope?.from?.[0]?.name ||
-                preflight.mapping.source_email;
-              const dateStr = msg.envelope?.date
-                ? (msg.envelope.date instanceof Date ? msg.envelope.date.toISOString() : String(msg.envelope.date))
-                : msg.internalDate
-                ? (msg.internalDate instanceof Date ? msg.internalDate.toISOString() : String(msg.internalDate))
-                : new Date().toISOString();
-
-              // Check message ledger
-              const existingInLedger = messageLedger.findExisting(mappingId, mb.path, uid);
-              if (existingInLedger && existingInLedger.transfer_status === "VERIFIED") {
-                migrated++;
-                bytesTransferred += existingInLedger.size_bytes;
-                liveTransferStates.set(mappingId, {
-                  ...liveTransferStates.get(mappingId)!,
-                  stage: "STREAMING",
-                  stageDescription: `Verified existing message in ledger. Skipped duplicate.`,
-                  currentFolder: mb.path,
-                  currentUid: uid,
-                  currentSubject: subject,
-                  currentSender: sender,
-                  currentDate: dateStr,
-                  currentSizeBytes: existingInLedger.size_bytes,
-                  lastTargetMessageId: existingInLedger.target_message_id,
-                  lastTargetThreadId: existingInLedger.target_thread_id,
-                  lastTargetLabels: [gwsLabel],
-                  lastAction: "SKIPPED_DUPLICATE",
-                  migrated,
-                  bytesTransferred,
-                  updatedAt: new Date().toISOString(),
-                });
-                continue;
-              }
-
-              const rawMime = msg.source;
-              if (!rawMime) continue;
-              const writeToken = `write-${jobId}-${uid}`;
-
+            // Fast folder bypass: If all messages in this folder are already verified, skip IMAP fetching
+            if (status.messages && verifiedUids.size >= status.messages) {
+              migrated += verifiedUids.size;
               liveTransferStates.set(mappingId, {
                 ...liveTransferStates.get(mappingId)!,
                 stage: "STREAMING",
-                stageDescription: `Streaming UID #${uid} (${(rawMime.length / 1024).toFixed(1)} KB) from "${mb.path}" to Google Workspace...`,
+                stageDescription: `Folder "${mb.path}" already 100% migrated (${verifiedUids.size} messages verified). Skipping folder...`,
                 currentFolder: mb.path,
-                currentUid: uid,
-                currentSubject: subject,
-                currentSender: sender,
-                currentDate: dateStr,
-                currentSizeBytes: rawMime.length,
+                migrated,
                 updatedAt: new Date().toISOString(),
               });
+              continue;
+            }
 
-              try {
-                messageLedger.recordWriteAttempt({
-                  projectId,
-                  mappingId,
-                  sourceFolder: mb.path,
-                  sourceUid: uid,
-                  sourceMessageId,
-                  rfc822Content: rawMime,
-                  transferStatus: "PENDING",
-                  writeAttemptToken: writeToken,
-                });
+            // Fast UID probe (lightweight query without downloading raw RFC822 bodies)
+            const allUids: number[] = [];
+            for await (const msg of imapClient.fetch("1:*", { uid: true })) {
+              allUids.push(msg.uid);
+            }
 
-                const importRes = await importMessageToGoogle(
-                  preflight.mapping.target_email,
-                  project.google_service_account_json,
-                  rawMime,
-                  sourceMessageId,
-                  [gwsLabel]
-                );
+            const deltaUids = allUids.filter((u) => !verifiedUids.has(u));
+            const alreadyVerifiedInFolder = allUids.length - deltaUids.length;
+            if (alreadyVerifiedInFolder > 0) {
+              migrated += alreadyVerifiedInFolder;
+            }
 
-                if (!importRes.success) {
-                  throw new Error(importRes.reason || "Google Workspace import failed");
+            if (deltaUids.length === 0) {
+              liveTransferStates.set(mappingId, {
+                ...liveTransferStates.get(mappingId)!,
+                stage: "STREAMING",
+                stageDescription: `All ${allUids.length} messages in "${mb.path}" already verified in ledger. Skipping...`,
+                currentFolder: mb.path,
+                migrated,
+                updatedAt: new Date().toISOString(),
+              });
+              continue;
+            }
+
+            // Fetch ONLY the delta UIDs in safe chunks (saves GBs of bandwidth and hours of time)
+            const CHUNK_SIZE = 250;
+            for (let c = 0; c < deltaUids.length; c += CHUNK_SIZE) {
+              const currentJobControl = activeMigrationJobs.get(jobId);
+              if (currentJobControl?.cancelRequested) break;
+
+              const chunkUids = deltaUids.slice(c, c + CHUNK_SIZE);
+
+              for await (const msg of imapClient.fetch(
+                chunkUids,
+                {
+                  source: true,
+                  envelope: true,
+                  uid: true,
+                  internalDate: true,
+                },
+                { uid: true }
+              )) {
+                const innerJobControl = activeMigrationJobs.get(jobId);
+                if (innerJobControl?.cancelRequested) break;
+
+                const uid = msg.uid;
+                const sourceMessageId =
+                  msg.envelope?.messageId ||
+                  `<${uid}-${mb.path.replace(/[^a-zA-Z0-9]/g, "_")}-${preflight.mapping.source_email}>`;
+                const subject = msg.envelope?.subject || "No Subject";
+                const sender =
+                  msg.envelope?.from?.[0]?.address ||
+                  msg.envelope?.from?.[0]?.name ||
+                  preflight.mapping.source_email;
+                const dateStr = msg.envelope?.date
+                  ? (msg.envelope.date instanceof Date ? msg.envelope.date.toISOString() : String(msg.envelope.date))
+                  : msg.internalDate
+                  ? (msg.internalDate instanceof Date ? msg.internalDate.toISOString() : String(msg.internalDate))
+                  : new Date().toISOString();
+
+                // Double check message ledger (idempotency guard)
+                const existingInLedger = messageLedger.findExisting(mappingId, mb.path, uid);
+                if (existingInLedger && existingInLedger.transfer_status === "VERIFIED") {
+                  migrated++;
+                  bytesTransferred += existingInLedger.size_bytes;
+                  continue;
                 }
 
-                messageLedger.recordWriteAttempt({
-                  projectId,
-                  mappingId,
-                  sourceFolder: mb.path,
-                  sourceUid: uid,
-                  sourceMessageId,
-                  rfc822Content: rawMime,
-                  targetMessageId: importRes.targetMessageId,
-                  targetThreadId: importRes.targetThreadId,
-                  sizeBytes: rawMime.length,
-                  transferStatus: "VERIFIED",
-                  writeAttemptToken: writeToken,
-                });
+                const rawMime = msg.source;
+                if (!rawMime) continue;
 
-                migrated++;
-                bytesTransferred += rawMime.length;
+                // Pillar 3: RFC 822 Header Normalization Engine (repairs missing From/Date/Subject in-flight)
+                const normalizedMime = normalizeRfc822Headers(rawMime, sender, dateStr);
+                const writeToken = `write-${jobId}-${uid}`;
 
                 liveTransferStates.set(mappingId, {
                   ...liveTransferStates.get(mappingId)!,
                   stage: "STREAMING",
-                  stageDescription: `Imported to Google Workspace (ID: ${importRes.targetMessageId})`,
+                  stageDescription: `Streaming UID #${uid} (${(normalizedMime.length / 1024).toFixed(1)} KB) from "${mb.path}" to Google Workspace...`,
                   currentFolder: mb.path,
                   currentUid: uid,
                   currentSubject: subject,
                   currentSender: sender,
                   currentDate: dateStr,
-                  currentSizeBytes: rawMime.length,
-                  lastTargetMessageId: importRes.targetMessageId || null,
-                  lastTargetThreadId: importRes.targetThreadId || null,
-                  lastTargetLabels: [gwsLabel],
-                  lastAction: "IMPORTED",
-                  migrated,
-                  bytesTransferred,
+                  currentSizeBytes: normalizedMime.length,
                   updatedAt: new Date().toISOString(),
-                });
-              } catch (writeErr) {
-                failed++;
-                messageLedger.recordWriteAttempt({
-                  projectId,
-                  mappingId,
-                  sourceFolder: mb.path,
-                  sourceUid: uid,
-                  sourceMessageId,
-                  rfc822Content: rawMime,
-                  transferStatus: "FAILED",
-                  errorDetails: (writeErr as Error).message,
                 });
 
-                liveTransferStates.set(mappingId, {
-                  ...liveTransferStates.get(mappingId)!,
-                  stageDescription: `Error on UID #${uid}: ${(writeErr as Error).message}`,
-                  lastError: (writeErr as Error).message,
-                  lastAction: "FAILED",
-                  failed,
-                  updatedAt: new Date().toISOString(),
-                });
+                try {
+                  messageLedger.recordWriteAttempt({
+                    projectId,
+                    mappingId,
+                    sourceFolder: mb.path,
+                    sourceUid: uid,
+                    sourceMessageId,
+                    rfc822Content: normalizedMime,
+                    transferStatus: "PENDING",
+                    writeAttemptToken: writeToken,
+                  });
+
+                  const importRes = await importMessageToGoogle(
+                    preflight.mapping.target_email,
+                    project.google_service_account_json,
+                    normalizedMime,
+                    sourceMessageId,
+                    [gwsLabel],
+                    true // Skip redundant remote search since local ledger handles deduplication
+                  );
+
+                  if (!importRes.success) {
+                    throw new Error(importRes.reason || "Google Workspace import failed");
+                  }
+
+                  messageLedger.recordWriteAttempt({
+                    projectId,
+                    mappingId,
+                    sourceFolder: mb.path,
+                    sourceUid: uid,
+                    sourceMessageId,
+                    rfc822Content: normalizedMime,
+                    targetMessageId: importRes.targetMessageId,
+                    targetThreadId: importRes.targetThreadId,
+                    sizeBytes: normalizedMime.length,
+                    transferStatus: "VERIFIED",
+                    writeAttemptToken: writeToken,
+                  });
+
+                  migrated++;
+                  bytesTransferred += normalizedMime.length;
+
+                  liveTransferStates.set(mappingId, {
+                    ...liveTransferStates.get(mappingId)!,
+                    lastTargetMessageId: importRes.targetMessageId || null,
+                    lastTargetThreadId: importRes.targetThreadId || null,
+                    lastTargetLabels: [gwsLabel],
+                    lastAction: importRes.skipped ? "SKIPPED_DUPLICATE" : "IMPORTED",
+                    lastError: null,
+                    migrated,
+                    bytesTransferred,
+                    updatedAt: new Date().toISOString(),
+                  });
+                } catch (writeErr) {
+                  failed++;
+                  messageLedger.recordWriteAttempt({
+                    projectId,
+                    mappingId,
+                    sourceFolder: mb.path,
+                    sourceUid: uid,
+                    sourceMessageId,
+                    rfc822Content: normalizedMime,
+                    transferStatus: "FAILED",
+                    writeAttemptToken: writeToken,
+                    errorDetails: (writeErr as Error).message,
+                  });
+
+                  liveTransferStates.set(mappingId, {
+                    ...liveTransferStates.get(mappingId)!,
+                    stageDescription: `Error on UID #${uid}: ${(writeErr as Error).message}`,
+                    lastError: (writeErr as Error).message,
+                    lastAction: "FAILED",
+                    failed,
+                    updatedAt: new Date().toISOString(),
+                  });
+                }
+
+                // Update database progress on every message for real-time reporting
+                db.prepare(
+                  `UPDATE migration_jobs SET 
+                    messages_migrated = ?, 
+                    messages_failed = ?, 
+                    bytes_transferred = ?, 
+                    updated_at = ? 
+                   WHERE id = ?`
+                ).run(migrated, failed, bytesTransferred, new Date().toISOString(), jobId);
               }
-
-              // Update database progress on every message for real-time reporting
-              db.prepare(
-                `UPDATE migration_jobs SET 
-                  messages_migrated = ?, 
-                  messages_failed = ?, 
-                  bytes_transferred = ?, 
-                  updated_at = ? 
-                 WHERE id = ?`
-              ).run(migrated, failed, bytesTransferred, new Date().toISOString(), jobId);
             }
           } finally {
             lock.release();
@@ -465,12 +500,13 @@ export async function executeMigrationJob(
           continue;
         }
 
-        // Synthesize raw RFC822 message fixture
+        // Synthesize raw RFC822 message fixture & normalize headers
         const sampleMime = generateSampleMimeMessage(
           preflight.mapping.source_email,
           preflight.mapping.target_email,
           uid
         );
+        const normalizedMime = normalizeRfc822Headers(sampleMime, preflight.mapping.source_email);
 
         const sourceMessageId = `<msg-${uid}-${preflight.mapping.source_email}>`;
         const writeToken = `write-${jobId}-${uid}`;
@@ -483,7 +519,7 @@ export async function executeMigrationJob(
             sourceFolder: "INBOX",
             sourceUid: uid,
             sourceMessageId,
-            rfc822Content: sampleMime,
+            rfc822Content: normalizedMime,
             transferStatus: "PENDING",
             writeAttemptToken: writeToken,
           });
@@ -492,7 +528,7 @@ export async function executeMigrationJob(
           const importRes = await importMessageToGoogle(
             preflight.mapping.target_email,
             project.google_service_account_json,
-            sampleMime,
+            normalizedMime,
             sourceMessageId,
             ["INBOX"]
           );
@@ -508,16 +544,16 @@ export async function executeMigrationJob(
             sourceFolder: "INBOX",
             sourceUid: uid,
             sourceMessageId,
-            rfc822Content: sampleMime,
+            rfc822Content: normalizedMime,
             targetMessageId: importRes.targetMessageId,
             targetThreadId: importRes.targetThreadId,
-            sizeBytes: Buffer.byteLength(sampleMime, "utf-8"),
+            sizeBytes: normalizedMime.length,
             transferStatus: "VERIFIED",
             writeAttemptToken: writeToken,
           });
 
           migrated++;
-          bytesTransferred += Buffer.byteLength(sampleMime, "utf-8");
+          bytesTransferred += normalizedMime.length;
         } catch (writeErr) {
           failed++;
           messageLedger.recordWriteAttempt({

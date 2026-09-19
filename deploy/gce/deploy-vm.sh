@@ -155,3 +155,11 @@ echo -e "SSH to VM:         ${YELLOW}gcloud compute ssh ${INSTANCE_NAME} --zone=
 echo -e "Live Logs:         ${YELLOW}gcloud compute ssh ${INSTANCE_NAME} --zone=${ZONE} --command='sudo journalctl -u z2g -f'${NC}"
 echo ""
 echo -e "${GREEN}Open http://${EXTERNAL_IP} in your browser to monitor or resume the migration 24/7!${NC}"
+
+# Auto-open dashboard in browser
+if command -v open >/dev/null 2>&1; then
+  echo -e "${CYAN}Launching dashboard in your default browser...${NC}"
+  open "http://${EXTERNAL_IP}" 2>/dev/null || true
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "http://${EXTERNAL_IP}" 2>/dev/null || true
+fi

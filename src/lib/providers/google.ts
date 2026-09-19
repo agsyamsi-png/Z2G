@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { JWT } from "google-auth-library";
 import { GoogleValidationResult } from "./types";
 import { secureLogger } from "../security/logger";
+import { quarantineRestrictedAttachments } from "../migration/quarantine";
 
 const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GMAIL_MIGRATION_SCOPE = "https://www.googleapis.com/auth/gmail.insert";
@@ -207,15 +208,37 @@ export interface GoogleImportResult {
   reason?: string;
 }
 
+// In-memory JWT Client Cache: preserves OAuth2 access tokens for their full 55-minute lifetime
+const jwtClientCache = new Map<string, JWT>();
+
+export function getOrCreateJWTClient(
+  targetEmail: string,
+  serviceAccountJson: string,
+  scope: string
+): JWT {
+  const cacheKey = `${targetEmail}:${scope}`;
+  let client = jwtClientCache.get(cacheKey);
+  if (!client) {
+    const credentials = JSON.parse(serviceAccountJson);
+    client = new JWT({
+      email: credentials.client_email,
+      key: credentials.private_key,
+      scopes: [scope],
+      subject: targetEmail,
+    });
+    jwtClientCache.set(cacheKey, client);
+  }
+  return client;
+}
+
 /**
- * Checks if a message with the given RFC822 Message-ID already exists in the target Google Workspace mailbox.
- * Uses Gmail API users.messages.list with query 'rfc822msgid:<Message-ID>'.
+ * Checks if a message with specific RFC822 Message-ID already exists in Google Workspace.
  */
 export async function checkTargetMessageExistsInGoogle(
   targetEmail: string,
   serviceAccountJson: string | null | undefined,
   rfc822MessageId: string
-): Promise<GoogleMessageCheckResult> {
+): Promise<{ exists: boolean; messageId?: string; threadId?: string }> {
   const activeServiceAccountJson = resolveServiceAccountJson(serviceAccountJson);
 
   if (
@@ -235,17 +258,14 @@ export async function checkTargetMessageExistsInGoogle(
   }
 
   try {
-    const credentials = JSON.parse(activeServiceAccountJson);
-    const authClient = new JWT({
-      email: credentials.client_email,
-      key: credentials.private_key,
-      scopes: [GMAIL_READONLY_SCOPE, GMAIL_MIGRATION_SCOPE],
-      subject: targetEmail,
-    });
+    const authClient = getOrCreateJWTClient(
+      targetEmail,
+      activeServiceAccountJson,
+      GMAIL_READONLY_SCOPE
+    );
 
-    // Clean Message-ID for query (strip brackets if present)
-    const cleanId = rfc822MessageId.replace(/^<|>$/g, "").trim();
-    const query = encodeURIComponent(`rfc822msgid:${cleanId}`);
+    const sanitizedMsgId = rfc822MessageId.replace(/[<>]/g, "").trim();
+    const query = encodeURIComponent(`rfc822msgid:${sanitizedMsgId}`);
     const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
       targetEmail
     )}/messages?q=${query}&maxResults=1`;
@@ -285,12 +305,13 @@ export async function importMessageToGoogle(
   serviceAccountJson: string | null | undefined,
   rfc822Content: string | Buffer,
   rfc822MessageId?: string | null,
-  labels: string[] = ["INBOX"]
+  labels: string[] = ["INBOX"],
+  skipRemoteDedupCheck: boolean = true
 ): Promise<GoogleImportResult> {
   const activeServiceAccountJson = resolveServiceAccountJson(serviceAccountJson);
 
-  // 1. Google Workspace pre-write deduplication check
-  if (rfc822MessageId) {
+  // 1. Google Workspace pre-write deduplication check (optional if local ledger already verified)
+  if (!skipRemoteDedupCheck && rfc822MessageId) {
     const existing = await checkTargetMessageExistsInGoogle(
       targetEmail,
       activeServiceAccountJson,
@@ -326,54 +347,94 @@ export async function importMessageToGoogle(
     };
   }
 
-  // 3. Live Google Workspace Gmail API users.messages.import
-  try {
-    const credentials = JSON.parse(activeServiceAccountJson);
-    const authClient = new JWT({
-      email: credentials.client_email,
-      key: credentials.private_key,
-      scopes: [GMAIL_MIGRATION_SCOPE],
-      subject: targetEmail,
-    });
+  // 3. Live Google Workspace Gmail API users.messages.import (with persistent JWT client & FastMigrator quarantine)
+  const authClient = getOrCreateJWTClient(
+    targetEmail,
+    activeServiceAccountJson,
+    GMAIL_MIGRATION_SCOPE
+  );
 
-    const rawBase64Url = Buffer.from(rfc822Content)
-      .toString("base64")
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
+  const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+    targetEmail
+  )}/messages/import?neverMarkSpam=true&processForCalendar=false&internalDateSource=dateHeader`;
 
-    const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
-      targetEmail
-    )}/messages/import?neverMarkSpam=true&processForCalendar=true`;
+  let activeContent = rfc822Content;
+  const maxRetries = 3;
 
-    const res = await authClient.request<{ id: string; threadId: string }>({
-      url,
-      method: "POST",
-      data: {
-        raw: rawBase64Url,
-        labelIds: labels,
-      },
-    });
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const rawBase64Url = Buffer.from(activeContent)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
 
-    if (res.status === 200 && res.data?.id) {
+      const res = await authClient.request<{ id: string; threadId: string }>({
+        url,
+        method: "POST",
+        data: {
+          raw: rawBase64Url,
+          labelIds: labels,
+        },
+      });
+
+      if (res.status === 200 && res.data?.id) {
+        return {
+          success: true,
+          skipped: false,
+          targetMessageId: res.data.id,
+          targetThreadId: res.data.threadId,
+        };
+      }
+
       return {
-        success: true,
+        success: false,
         skipped: false,
-        targetMessageId: res.data.id,
-        targetThreadId: res.data.threadId,
+        reason: `Gmail API returned status ${res.status}`,
+      };
+    } catch (err: unknown) {
+      const errorObj = err as { message?: string; response?: { status?: number }; code?: number };
+      const errMsg = errorObj?.message || String(err);
+      const status = errorObj?.response?.status || errorObj?.code;
+
+      // Rate limit backoff (HTTP 429 or 503)
+      if (status === 429 || status === 503 || errMsg.includes("rate limit") || errMsg.includes("User Rate Limit")) {
+        if (attempt < maxRetries) {
+          const backoffMs = Math.min(8000, Math.pow(2, attempt) * 1000 + Math.random() * 500);
+          secureLogger.warn(
+            `Rate limit encountered for ${targetEmail}. Retrying in ${Math.round(backoffMs)}ms (attempt ${attempt + 1}/${maxRetries})...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+      }
+
+      // Pillar 4: In-Flight Attachment Quarantine (HTTP 400 Invalid attachment)
+      if (
+        (status === 400 || errMsg.toLowerCase().includes("invalid attachment") || errMsg.toLowerCase().includes("attachment")) &&
+        attempt === 0
+      ) {
+        const quarantineResult = quarantineRestrictedAttachments(activeContent);
+        if (quarantineResult.modified && quarantineResult.quarantinedFiles.length > 0) {
+          secureLogger.info(
+            `[FastMigrator Quarantine] Isolated prohibited attachment(s) [${quarantineResult.quarantinedFiles.join(", ")}] for message to ${targetEmail}. Re-ingesting sanitized MIME...`
+          );
+          activeContent = quarantineResult.content;
+          continue;
+        }
+      }
+
+      return {
+        success: false,
+        skipped: false,
+        reason: errMsg || "Gmail import failed",
       };
     }
-
-    return {
-      success: false,
-      skipped: false,
-      reason: `Gmail API returned status ${res.status}`,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      skipped: false,
-      reason: (err as Error).message || "Gmail import failed",
-    };
   }
+
+  return {
+    success: false,
+    skipped: false,
+    reason: "Gmail import exceeded maximum retry attempts",
+  };
 }
